@@ -1016,7 +1016,7 @@
                 <div class="alert-job">${alert.job_name} #${alert.build_number}</div>
                 <div class="alert-fix">💡 ${alert.fix}</div>
                 <div class="alert-actions">
-                    <button class="btn-diagnose" onclick="diagnoseAlert('${alert.job_name}', ${alert.build_number}, '${alert.id}')">🔍 Diagnose</button>
+                    <button class="btn-diagnose" onclick="diagnoseAlert('${alert.job_name}', ${alert.build_number}, '${alert.id}', '${alert.category}')">🔍 Diagnose</button>
                     <button class="btn-dismiss" onclick="dismissAlert('${alert.id}')">✕ Dismiss</button>
                 </div>
             `;
@@ -1050,8 +1050,13 @@
             }
         }
 
-        function diagnoseAlert(jobName, buildNumber, alertId) {
-            const msg = `Diagnose the build failure for job "${jobName}" build #${buildNumber}. Fetch the build log, identify the root cause, and suggest a fix.`;
+        function diagnoseAlert(jobName, buildNumber, alertId, category) {
+            let msg;
+            if (category === 'Slow Build') {
+                msg = `Build "${jobName}" #${buildNumber} is taking much longer than usual. Analyze recent changes and suggest why the build time increased.`;
+            } else {
+                msg = `Diagnose the build failure for job "${jobName}" build #${buildNumber}. Fetch the build log, identify the root cause, and suggest a fix.`;
+            }
             document.getElementById('messageInput').value = msg;
             sendMessage();
             dismissAlert(alertId);

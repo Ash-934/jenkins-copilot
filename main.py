@@ -35,14 +35,21 @@ logger = logging.getLogger("chatbot")
 
 async def auto_diagnose_callback(job_name: str, build_number: int, alert):
     """Called by the monitor when auto-diagnosis is enabled.
-    Sends the failure into the chat agent for detailed analysis."""
+    Handles both build failures and build time anomalies."""
     try:
-        msg = (
-            f"Proactive alert: Build **{job_name} #{build_number}** failed.\n"
-            f"Error category: {alert.category}\n"
-            f"Pattern match: {alert.snippet}\n\n"
-            f"Please diagnose this build failure and suggest fixes."
-        )
+        if alert.category == "Slow Build":
+            msg = (
+                f"Proactive alert: Build **{job_name} #{build_number}** is unusually slow.\n"
+                f"{alert.snippet}\n\n"
+                f"Analyze recent changes to this job and suggest why the build time increased."
+            )
+        else:
+            msg = (
+                f"Proactive alert: Build **{job_name} #{build_number}** failed.\n"
+                f"Error category: {alert.category}\n"
+                f"Pattern match: {alert.snippet}\n\n"
+                f"Diagnose this build failure and suggest fixes."
+            )
         response = await agent_chat("auto-diagnosis", msg)
         alert.diagnosis = response
         logger.info(f"✅ Auto-diagnosis complete for {job_name} #{build_number}")

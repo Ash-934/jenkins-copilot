@@ -126,10 +126,14 @@ class Alert:
 # -- Monitor Service --
 
 class BuildMonitor:
-    """Background service that watches Jenkins for build failures."""
+    """Background service that watches Jenkins for build failures and build time anomalies."""
+
+    DURATION_HISTORY_SIZE = 10
+    SLOW_BUILD_THRESHOLD = 2.0
 
     def __init__(self):
         self._seen_builds: dict[str, int] = {}
+        self._build_durations: dict[str, list[int]] = {}
         self._alerts: list[Alert] = []
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -163,7 +167,7 @@ class BuildMonitor:
             return
         self._running = True
         self._task = asyncio.create_task(self._poll_loop())
-        logger.info(f"🔍 Build monitor started (interval={settings.MONITOR_INTERVAL}s)")
+        logger.info(f"Build monitor started (interval={settings.MONITOR_INTERVAL}s)")
 
     async def stop(self):
         """Stop the monitor."""
@@ -177,10 +181,8 @@ class BuildMonitor:
         logger.info("Build monitor stopped")
 
     async def _poll_loop(self):
-        """Main polling loop — runs every MONITOR_INTERVAL seconds."""
-        # Initial delay to let the app start
+        """Main polling loop."""
         await asyncio.sleep(3)
-
         while self._running:
             try:
                 await self._check_builds()
@@ -189,30 +191,21 @@ class BuildMonitor:
             await asyncio.sleep(settings.MONITOR_INTERVAL)
 
     async def _check_builds(self):
-        """Check all jobs for new failures."""
+        """Check all jobs for failures and build time anomalies."""
         jenkins = JenkinsClient()
         try:
             jobs = await jenkins.list_jobs()
-
             for job in jobs:
                 job_name = job.get("name", "")
-                color = job.get("color", "")
-
-                # Only check jobs that show a failure state
-                # Jenkins colors: blue=success, red=fail, yellow=unstable, etc.
-                if not any(c in color for c in ["red", "yellow", "aborted"]):
-                    continue
-
                 try:
                     await self._check_job(jenkins, job_name)
                 except Exception as e:
                     logger.debug(f"Error checking job {job_name}: {e}")
-
         finally:
             await jenkins.close()
 
     async def _check_job(self, jenkins: JenkinsClient, job_name: str):
-        """Check a specific job for new failures."""
+        """Check a job for new failures AND build time anomalies."""
         try:
             info = await jenkins.get_build_info(job_name, "lastBuild")
         except Exception:
@@ -220,20 +213,87 @@ class BuildMonitor:
 
         build_num = info.get("number", 0)
         result = info.get("result", "")
+        duration = info.get("duration", 0)
 
         # Skip if we've already seen this build
         if self._seen_builds.get(job_name, 0) >= build_num:
             return
 
+        # If this job has no duration history, backfill from recent builds
+        if job_name not in self._build_durations:
+            await self._backfill_durations(jenkins, job_name, build_num)
+
         self._seen_builds[job_name] = build_num
 
-        # Only alert on failures / unstable
-        if result not in ("FAILURE", "UNSTABLE", "ABORTED"):
-            return
+        # -- Build time anomaly detection --
+        if duration > 0:
+            await self._check_build_time(job_name, build_num, duration, result)
 
-        logger.info(f"🚨 Detected failed build: {job_name} #{build_num} ({result})")
+        # -- Failure detection --
+        if result in ("FAILURE", "UNSTABLE", "ABORTED"):
+            await self._handle_failure(jenkins, job_name, build_num, result)
 
-        # Fetch log and classify
+        self._cap_alerts()
+
+    async def _backfill_durations(self, jenkins: JenkinsClient, job_name: str, current_build_num: int):
+        """Seed duration history from recent builds so spike detection works on first run."""
+        try:
+            recent = await jenkins.get_recent_builds(job_name, count=self.DURATION_HISTORY_SIZE)
+            durations = []
+            for build in reversed(recent):  # oldest first
+                d = build.get("duration", 0)
+                num = build.get("number", 0)
+                # Skip the current build (it will be added by _check_build_time)
+                if d > 0 and num != current_build_num:
+                    durations.append(d)
+            if durations:
+                self._build_durations[job_name] = durations[-self.DURATION_HISTORY_SIZE:]
+                logger.debug(f"Backfilled {len(durations)} build durations for {job_name}")
+        except Exception as e:
+            logger.debug(f"Could not backfill durations for {job_name}: {e}")
+
+    async def _check_build_time(self, job_name: str, build_num: int, duration: int, result: str):
+        """Track build duration and alert on sharp spikes."""
+        history = self._build_durations.get(job_name, [])
+
+        if len(history) >= 3:
+            avg = sum(history) / len(history)
+            if avg > 0 and duration > avg * self.SLOW_BUILD_THRESHOLD:
+                ratio = duration / avg
+                duration_s = duration // 1000
+                avg_s = int(avg) // 1000
+
+                alert = Alert(
+                    id=str(uuid.uuid4())[:8],
+                    job_name=job_name,
+                    build_number=build_num,
+                    result=result or "SUCCESS",
+                    category="Slow Build",
+                    severity="warning",
+                    fix=f"Build took {duration_s}s, which is {ratio:.1f}x the average ({avg_s}s). Check for new dependencies, larger assets, or infrastructure issues.",
+                    snippet=f"Duration: {duration_s}s | Average: {avg_s}s | Ratio: {ratio:.1f}x",
+                    timestamp=time.time(),
+                )
+                self._alerts.append(alert)
+                logger.info(f"Slow build: {job_name} #{build_num} took {duration_s}s ({ratio:.1f}x avg)")
+
+                if self.auto_diagnose and self._auto_diagnose_callback:
+                    try:
+                        await self._auto_diagnose_callback(job_name, build_num, alert)
+                        alert.auto_diagnosed = True
+                    except Exception as e:
+                        logger.error(f"Auto-diagnose failed for slow build: {e}")
+
+        # Update history (rolling window)
+        history.append(duration)
+        if len(history) > self.DURATION_HISTORY_SIZE:
+            history = history[-self.DURATION_HISTORY_SIZE:]
+        self._build_durations[job_name] = history
+
+    async def _handle_failure(self, jenkins: JenkinsClient, job_name: str, build_num: int, result: str):
+        """Handle a failed build: classify error and create alerts."""
+        logger.info(f"Detected failed build: {job_name} #{build_num} ({result})")
+
         try:
             log_text = await jenkins.get_build_log_tail(job_name, "lastBuild", lines=120)
         except Exception:
@@ -242,7 +302,6 @@ class BuildMonitor:
         error_matches = classify_error(log_text) if log_text else []
 
         if error_matches:
-            # Create one alert per matched pattern
             for match in error_matches:
                 alert = Alert(
                     id=str(uuid.uuid4())[:8],
@@ -256,9 +315,8 @@ class BuildMonitor:
                     timestamp=time.time(),
                 )
                 self._alerts.append(alert)
-                logger.info(f"  → Alert: {match['category']} in {job_name} #{build_num}")
+                logger.info(f"  Alert: {match['category']} in {job_name} #{build_num}")
 
-                # Auto-diagnose if enabled
                 if self.auto_diagnose and self._auto_diagnose_callback:
                     try:
                         await self._auto_diagnose_callback(job_name, build_num, alert)
@@ -266,13 +324,12 @@ class BuildMonitor:
                     except Exception as e:
                         logger.error(f"Auto-diagnose failed: {e}")
         else:
-            # Generic failure alert (no pattern matched)
             alert = Alert(
                 id=str(uuid.uuid4())[:8],
                 job_name=job_name,
                 build_number=build_num,
                 result=result,
-                category="❌ Build Failed",
+                category="Build Failed",
                 severity="error",
                 fix="Check the build log for details. Click 'Diagnose' for AI analysis.",
                 snippet=log_text[-500:] if log_text else "No log available",
@@ -280,7 +337,14 @@ class BuildMonitor:
             )
             self._alerts.append(alert)
 
-        # Cap alerts at 50
+            if self.auto_diagnose and self._auto_diagnose_callback:
+                try:
+                    await self._auto_diagnose_callback(job_name, build_num, alert)
+                    alert.auto_diagnosed = True
+                except Exception as e:
+                    logger.error(f"Auto-diagnose failed: {e}")
+
+    def _cap_alerts(self):
         if len(self._alerts) > 50:
             self._alerts = self._alerts[-50:]
 
