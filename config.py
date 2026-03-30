@@ -23,5 +23,8 @@ class Settings:
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))
 
+    # Monitor
+    MONITOR_ENABLED: bool = os.getenv("MONITOR_ENABLED", "true").lower() == "true"
+    MONITOR_INTERVAL: int = int(os.getenv("MONITOR_INTERVAL", "30"))
 
 settings = Settings()

@@ -289,6 +289,18 @@
             color: var(--text-secondary);
         }
 
+        .message-body a {
+            color: var(--accent);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.2s;
+            word-break: break-all;
+        }
+
+        .message-body a:hover {
+            border-bottom-color: var(--accent);
+        }
+
         .message-body code {
             background: var(--bg-tertiary);
             padding: 2px 6px;
@@ -527,6 +539,114 @@
             margin-left: auto;
             margin-right: auto;
         }
+
+        /* -- Alert Cards (in chat) -- */
+        .alert-card {
+            max-width: 820px;
+            margin: 0 auto;
+            background: linear-gradient(135deg, rgba(248, 113, 113, 0.08), rgba(251, 191, 36, 0.06));
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            border-radius: 12px;
+            padding: 16px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .alert-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .alert-category {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .alert-time {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .alert-job {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--accent);
+            margin-bottom: 6px;
+        }
+
+        .alert-fix {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin-bottom: 10px;
+        }
+
+        .alert-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .alert-actions button {
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            transition: all 0.2s;
+        }
+
+        .btn-diagnose {
+            background: var(--accent-glow);
+            color: var(--accent);
+            border-color: var(--accent) !important;
+        }
+
+        .btn-diagnose:hover {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-dismiss {
+            background: transparent;
+            color: var(--text-secondary);
+        }
+
+        .btn-dismiss:hover {
+            background: var(--bg-secondary);
+        }
+
+        /* -- Auto-diagnosis toggle in agent bar -- */
+        .auto-diag-toggle {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+            margin-left: auto;
+        }
+
+        .auto-diag-toggle:hover {
+            border-color: var(--text-secondary);
+        }
+
+        .auto-diag-toggle.active {
+            background: rgba(248, 113, 113, 0.15);
+            border-color: var(--error);
+            color: var(--error);
+        }
+
+        .auto-diag-toggle input {
+            accent-color: var(--error);
+        }
     </style>
 </head>
 
@@ -548,7 +668,11 @@
     <!-- Agent Toggle Bar -->
     <div class="agent-bar" id="agentBar">
         <span class="agent-bar-label">Agents:</span>
-        <!-- Populated dynamically -->
+        <!-- Agent toggles populated dynamically -->
+        <label class="auto-diag-toggle" id="autoDiagLabel" title="Automatically diagnose build failures">
+            <input type="checkbox" id="autoDiagToggle" onchange="toggleAutoDiagnosis()">
+            🚨 Auto-Diagnose
+        </label>
     </div>
 
     <!-- Chat Container -->
@@ -652,6 +776,14 @@
                 bar.appendChild(toggle);
             }
 
+            // Re-add auto-diagnosis toggle (was wiped by innerHTML reset)
+            const diagLabel = document.createElement('label');
+            diagLabel.className = 'auto-diag-toggle';
+            diagLabel.id = 'autoDiagLabel';
+            diagLabel.title = 'Automatically diagnose build failures';
+            diagLabel.innerHTML = '<input type="checkbox" id="autoDiagToggle" onchange="toggleAutoDiagnosis()"> 🚨 Auto-Diagnose';
+            bar.appendChild(diagLabel);
+
             updateHint();
         }
 
@@ -699,30 +831,60 @@
 
         // -- Markdown renderer --
         function renderMarkdown(text) {
-            let html = text
-                .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${escapeHtml(code.trim())}</code></pre>`)
-                .replace(/`([^`]+)`/g, '<code>$1</code>')
+            // Preserve code blocks (replace with placeholders to avoid mangling URLs inside them)
+            const codeBlocks = [];
+            let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+                codeBlocks.push(`<pre><code>${escapeHtml(code.trim())}</code></pre>`);
+                return `__CODEBLOCK_${codeBlocks.length - 1}__`;
+            });
+
+            // Inline code (preserve before link processing)
+            const inlineCodes = [];
+            html = html.replace(/`([^`]+)`/g, (_, code) => {
+                inlineCodes.push(`<code>${code}</code>`);
+                return `__INLINE_${inlineCodes.length - 1}__`;
+            });
+
+            html = html
+                // Markdown links: [text](url)
+                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+                // Bare URLs: http:// or https://
+                .replace(/(?<!href=")(?<!src=")(https?:\/\/[^\s<>"')+]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
+                // Bold / italic
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
                 .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                // Headers
                 .replace(/^### (.+)$/gm, '<h4>$1</h4>')
                 .replace(/^## (.+)$/gm, '<h3>$1</h3>')
                 .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+                // Lists
                 .replace(/^[*-] (.+)$/gm, '<li>$1</li>')
                 .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+                // Horizontal rule
                 .replace(/^---$/gm, '<hr>')
+                // Tables
                 .replace(/\|(.+)\|/g, (match) => {
                     if (match.includes('---')) return '';
                     const cells = match.split('|').filter(c => c.trim());
                     return '<tr>' + cells.map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
                 });
+
+            // Wrap lists and tables
             html = html.replace(/((<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
             html = html.replace(/((<tr>.*<\/tr>\n?)+)/g, '<table>$1</table>');
+
+            // Paragraphs
             html = html.split('\n').map(line => {
                 line = line.trim();
                 if (!line) return '';
                 if (line.startsWith('<')) return line;
                 return `<p>${line}</p>`;
             }).join('\n');
+
+            // Restore code blocks and inline code
+            codeBlocks.forEach((block, i) => { html = html.replace(`__CODEBLOCK_${i}__`, block); });
+            inlineCodes.forEach((code, i) => { html = html.replace(`__INLINE_${i}__`, code); });
+
             return html;
         }
 
@@ -807,8 +969,119 @@
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
 
+        // -- Alert System (inline in chat) --
+
+        const seenAlertIds = new Set();
+
+        async function pollAlerts() {
+            try {
+                const resp = await fetch(`${API_URL}/api/alerts`);
+                const data = await resp.json();
+                const alerts = data.alerts || [];
+
+                // Sync auto-diagnose toggle state
+                const toggle = document.getElementById('autoDiagToggle');
+                const label = document.getElementById('autoDiagLabel');
+                toggle.checked = data.auto_diagnose || false;
+                label.classList.toggle('active', toggle.checked);
+
+                // Inject only NEW alerts into chat as cards
+                for (const a of alerts) {
+                    if (!seenAlertIds.has(a.id)) {
+                        seenAlertIds.add(a.id);
+                        addAlertCard(a);
+                    }
+                }
+            } catch (e) {
+                // Silent fail — monitor might not be running
+            }
+        }
+
+        function addAlertCard(alert) {
+            // Remove welcome screen if present
+            const welcome = document.getElementById('welcome');
+            if (welcome) welcome.remove();
+
+            const container = document.getElementById('messages');
+            const timeAgo = formatTimeAgo(alert.timestamp);
+
+            const card = document.createElement('div');
+            card.className = 'alert-card';
+            card.id = `alert-${alert.id}`;
+            card.innerHTML = `
+                <div class="alert-card-header">
+                    <span class="alert-category">${alert.category}</span>
+                    <span class="alert-time">${timeAgo}</span>
+                </div>
+                <div class="alert-job">${alert.job_name} #${alert.build_number}</div>
+                <div class="alert-fix">💡 ${alert.fix}</div>
+                <div class="alert-actions">
+                    <button class="btn-diagnose" onclick="diagnoseAlert('${alert.job_name}', ${alert.build_number}, '${alert.id}')">🔍 Diagnose</button>
+                    <button class="btn-dismiss" onclick="dismissAlert('${alert.id}')">✕ Dismiss</button>
+                </div>
+            `;
+            container.appendChild(card);
+
+            // Scroll to the new alert
+            const chatContainer = document.getElementById('chatContainer');
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function formatTimeAgo(timestamp) {
+            const seconds = Math.floor(Date.now() / 1000 - timestamp);
+            if (seconds < 60) return 'just now';
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            return `${Math.floor(seconds / 86400)}d ago`;
+        }
+
+        async function dismissAlert(alertId) {
+            try {
+                await fetch(`${API_URL}/api/alerts/${alertId}/dismiss`, { method: 'POST' });
+                const card = document.getElementById(`alert-${alertId}`);
+                if (card) {
+                    card.style.opacity = '0';
+                    card.style.transform = 'translateY(-8px)';
+                    card.style.transition = 'all 0.3s ease';
+                    setTimeout(() => card.remove(), 300);
+                }
+            } catch (e) {
+                console.error('Dismiss failed:', e);
+            }
+        }
+
+        function diagnoseAlert(jobName, buildNumber, alertId) {
+            const msg = `Diagnose the build failure for job "${jobName}" build #${buildNumber}. Fetch the build log, identify the root cause, and suggest a fix.`;
+            document.getElementById('messageInput').value = msg;
+            sendMessage();
+            dismissAlert(alertId);
+        }
+
+        async function toggleAutoDiagnosis() {
+            const toggle = document.getElementById('autoDiagToggle');
+            const label = document.getElementById('autoDiagLabel');
+            const enabled = toggle.checked;
+            label.classList.toggle('active', enabled);
+
+            try {
+                await fetch(`${API_URL}/api/monitor/settings`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ auto_diagnose: enabled }),
+                });
+            } catch (e) {
+                console.error('Toggle auto-diagnosis failed:', e);
+                toggle.checked = !enabled;
+                label.classList.toggle('active', !enabled);
+            }
+        }
+
+        // Poll alerts every 10 seconds
+        setInterval(pollAlerts, 10000);
+
         // Init
         init();
+        pollAlerts(); // Initial alert check
         document.getElementById('messageInput').focus();
     </script>
 </body>

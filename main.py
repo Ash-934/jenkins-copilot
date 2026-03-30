@@ -17,7 +17,9 @@ from agent import (
     set_active_agents,
     get_session_agents,
 )
+from config import settings
 from jenkins_client import JenkinsClient
+from monitor import monitor
 
 # -- Logging setup --
 
@@ -27,6 +29,25 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("chatbot")
+
+
+# -- Auto-diagnosis callback --
+
+async def auto_diagnose_callback(job_name: str, build_number: int, alert):
+    """Called by the monitor when auto-diagnosis is enabled.
+    Sends the failure into the chat agent for detailed analysis."""
+    try:
+        msg = (
+            f"Proactive alert: Build **{job_name} #{build_number}** failed.\n"
+            f"Error category: {alert.category}\n"
+            f"Pattern match: {alert.snippet}\n\n"
+            f"Please diagnose this build failure and suggest fixes."
+        )
+        response = await agent_chat("auto-diagnosis", msg)
+        alert.diagnosis = response
+        logger.info(f"✅ Auto-diagnosis complete for {job_name} #{build_number}")
+    except Exception as e:
+        logger.error(f"Auto-diagnosis error: {e}")
 
 
 # -- Lifespan --
@@ -48,7 +69,17 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.error(f"❌ Jenkins connection error:\n{traceback.format_exc()}")
 
+    # Start the build monitor
+    if settings.MONITOR_ENABLED:
+        monitor.set_auto_diagnose_callback(auto_diagnose_callback)
+        await monitor.start()
+    else:
+        logger.info("📊 Build monitor disabled (MONITOR_ENABLED=false)")
+
     yield
+
+    # Shutdown
+    await monitor.stop()
     logger.info("👋 Shutting down...")
 
 
@@ -98,6 +129,10 @@ class AgentToggleRequest(BaseModel):
     agents: list[str]
 
 
+class MonitorSettingsRequest(BaseModel):
+    auto_diagnose: bool
+
+
 # -- Chat route --
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -138,6 +173,52 @@ async def toggle_agents(req: AgentToggleRequest, session_id: str | None = None):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# -- Alert routes --
+
+@app.get("/api/alerts")
+async def get_alerts():
+    """Get all active (non-dismissed) alerts from the build monitor."""
+    return {
+        "alerts": monitor.get_all_alerts(),
+        "auto_diagnose": monitor.auto_diagnose,
+        "monitor_running": monitor._running,
+    }
+
+
+@app.post("/api/alerts/{alert_id}/dismiss")
+async def dismiss_alert(alert_id: str):
+    """Dismiss a specific alert."""
+    if monitor.dismiss_alert(alert_id):
+        return {"status": "dismissed"}
+    raise HTTPException(status_code=404, detail="Alert not found")
+
+
+@app.post("/api/alerts/clear")
+async def clear_alerts():
+    """Clear all alerts."""
+    monitor.clear_alerts()
+    return {"status": "cleared"}
+
+
+@app.put("/api/monitor/settings")
+async def update_monitor_settings(req: MonitorSettingsRequest):
+    """Toggle auto-diagnosis on/off."""
+    monitor.auto_diagnose = req.auto_diagnose
+    logger.info(f"🔧 Auto-diagnosis {'ENABLED' if req.auto_diagnose else 'DISABLED'}")
+    return {"auto_diagnose": monitor.auto_diagnose}
+
+
+@app.get("/api/monitor/settings")
+async def get_monitor_settings():
+    """Get current monitor settings."""
+    return {
+        "auto_diagnose": monitor.auto_diagnose,
+        "monitor_running": monitor._running,
+        "interval": settings.MONITOR_INTERVAL,
+        "alert_count": len(monitor.alerts),
+    }
+
+
 # -- Session routes --
 
 @app.get("/")
@@ -159,10 +240,15 @@ async def delete_session(session_id: str):
 
 @app.get("/api/health")
 async def health():
-    result = {"api": "ok", "architecture": "multi-agent-supervisor", "lm_studio": "unknown", "jenkins": "unknown"}
+    result = {
+        "api": "ok",
+        "architecture": "multi-agent-supervisor",
+        "lm_studio": "unknown",
+        "jenkins": "unknown",
+        "monitor": "running" if monitor._running else "stopped",
+    }
     try:
         import httpx
-        from config import settings
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.LM_STUDIO_BASE_URL}/models")
             if resp.status_code == 200:
@@ -196,5 +282,4 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    from config import settings
     uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
