@@ -76,7 +76,7 @@ async def chat(session_id: str, user_message: str) -> str:
             logger.error(f"[{session_id[:8]}] Graph build failed:\n{traceback.format_exc()}")
             raise RuntimeError(
                 f"Failed to build agent graph - is LM Studio running at "
-                f"{settings.LM_STUDIO_BASE_URL}? Error: {e}"
+                f"{settings.LLM_BASE_URL}? Error: {e}"
             ) from e
 
     graph = session["graph"]

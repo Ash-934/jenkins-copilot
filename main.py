@@ -257,7 +257,7 @@ async def health():
     try:
         import httpx
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.LM_STUDIO_BASE_URL}/models")
+            resp = await client.get(f"{settings.LLM_BASE_URL}/models")
             if resp.status_code == 200:
                 models = resp.json().get("data", [])
                 result["lm_studio"] = "connected"

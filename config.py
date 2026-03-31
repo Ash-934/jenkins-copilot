@@ -10,9 +10,9 @@ class Settings:
     """Central config - reads from .env file."""
 
     # LM Studio (local LLM)
-    LM_STUDIO_BASE_URL: str = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
-    LM_STUDIO_API_KEY: str = os.getenv("LM_STUDIO_API_KEY", "lm-studio")
-    LM_STUDIO_MODEL: str = os.getenv("LM_STUDIO_MODEL", "qwen/qwen3-vl-4b")
+    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
+    LLM_API_KEY: str = os.getenv("LLM_API_KEY", "lm-studio")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen/qwen3-vl-4b")
 
     # Jenkins
     JENKINS_URL: str = os.getenv("JENKINS_URL", "http://localhost:8080")

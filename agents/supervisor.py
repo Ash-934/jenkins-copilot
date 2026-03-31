@@ -63,9 +63,9 @@ class SupervisorState(TypedDict):
 
 def get_llm():
     return ChatOpenAI(
-        base_url=settings.LM_STUDIO_BASE_URL,
-        api_key=settings.LM_STUDIO_API_KEY,
-        model=settings.LM_STUDIO_MODEL,
+        base_url=settings.LLM_BASE_URL,
+        api_key=settings.LLM_API_KEY,
+        model=settings.LLM_MODEL,
         temperature=0.1,
     )
 
