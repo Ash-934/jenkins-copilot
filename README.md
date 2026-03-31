@@ -1,3 +1,5 @@
+# Jenkins Copilot
+
 ## Prerequisites
 
 - **Jenkins Server** - A running Jenkins server (e.g., via Docker `docker compose up -d`). Make sure to get the Jenkins initial admin password and log in.
